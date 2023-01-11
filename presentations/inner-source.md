@@ -34,7 +34,7 @@ backgroundImage: url('https://marp.app/assets/hero-background.svg')
 - Widely adopted in industry
   - Microsoft
   - Google
-  - Facebook
+  - Intel
 
 ---
 
@@ -68,17 +68,16 @@ backgroundImage: url('https://marp.app/assets/hero-background.svg')
 <!-- _class: invert -->
 ![bg](https://picsum.photos/2048?image=231)
 
-# Further resources
+# Conclusion
 
-## [InnerSource Commons](https://innersourcecommons.org)
+> Inner source is a powerful way for companies to tap into the benefits of open source development while still maintaining  control over the direction and use of their software.​
 
-## [InnerSource Patterns](https://innersourcecommons.org/learn/patterns/)
+## Further resources
 
-## [How to Create an InnerSource Culture](https://youtu.be/GXShI9Y9xGo)
-
-## [Introduction to InnerSource](https://resources.github.com/innersource/fundamentals)
-
-## [Getting started with InnerSource](https://www.oreilly.com/radar/getting-started-with-innersource)
+**[InnerSource Commons](https://innersourcecommons.org)**
+**[InnerSource Patterns](https://innersourcecommons.org/learn/patterns/)**
+**[How to Create an InnerSource Culture](https://youtu.be/GXShI9Y9xGo)**
+**[Getting started with InnerSource](https://www.oreilly.com/radar/getting-started-with-innersource)**
 
 ---
 <!-- _class: invert -->
