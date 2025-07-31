@@ -52,7 +52,8 @@ public interface ILegacyDataProcessor
 public class LegacyDataProcessor : ILegacyDataProcessor
 {
     // Optional modern dependencies - can be set via properties
-    public ILogger<LegacyDataProcessor>? Logger { get; set; }
+    public ILogger? Logger { get; set; }
+    public ILoggerFactory? LoggerFactory { get; set; }
     public Counter<long>? ProcessCounter { get; set; }
     public Histogram<double>? ProcessingDuration { get; set; }
     
@@ -63,8 +64,14 @@ public class LegacyDataProcessor : ILegacyDataProcessor
         var transformer = new DataTransformer();
         
         // Set modern properties on legacy components if available
-        if (Logger != null)
+        if (LoggerFactory != null)
         {
+            validator.Logger = LoggerFactory.CreateLogger<DataValidator>();
+            transformer.Logger = LoggerFactory.CreateLogger<DataTransformer>();
+        }
+        else if (Logger != null)
+        {
+            // Fallback to shared logger if factory is not available
             validator.Logger = Logger;
             transformer.Logger = Logger;
         }
@@ -233,17 +240,17 @@ public class DataTransformer
 public class ModernDataProcessorWrapper : ILegacyDataProcessor
 {
     private readonly LegacyDataProcessor _legacyProcessor;
-    private readonly ILogger<LegacyDataProcessor> _logger;
+    private readonly ILoggerFactory _loggerFactory;
     private readonly Counter<long> _processCounter;
     private readonly Histogram<double> _processingDuration;
     
     public ModernDataProcessorWrapper(
-        ILogger<LegacyDataProcessor> logger,
+        ILoggerFactory loggerFactory,
         IMeterFactory meterFactory)
     {
         // Create the legacy processor and enhance it with modern dependencies
         _legacyProcessor = new LegacyDataProcessor();
-        _logger = logger;
+        _loggerFactory = loggerFactory;
         
         // Initialize telemetry
         var meter = meterFactory.Create("LegacyLibrary.DataProcessor");
@@ -251,7 +258,8 @@ public class ModernDataProcessorWrapper : ILegacyDataProcessor
         _processingDuration = meter.CreateHistogram<double>("data_processing_duration", unit: "ms", description: "Duration of data processing operations");
         
         // Inject modern dependencies into the legacy processor
-        _legacyProcessor.Logger = _logger;
+        _legacyProcessor.Logger = _loggerFactory.CreateLogger<LegacyDataProcessor>();
+        _legacyProcessor.LoggerFactory = _loggerFactory;
         _legacyProcessor.ProcessCounter = _processCounter;
         _legacyProcessor.ProcessingDuration = _processingDuration;
     }
