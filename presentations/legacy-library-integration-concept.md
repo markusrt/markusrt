@@ -17,10 +17,22 @@ Legacy .NET libraries often have the following characteristics that make them ch
 
 The solution involves creating a modern wrapper around the legacy library that:
 
-1. Maintains the original interface for backward compatibility
-2. Implements modern patterns (DI, ILogger, telemetry)
-3. Provides simple registration via `builder.Services.AddLegacyLibrary()`
-4. Allows gradual migration of existing consumers
+1. **Uses the original legacy implementation** - the wrapper delegates to the actual legacy code
+2. **Enhances through property injection** - modern dependencies are added via properties
+3. **Maintains constructor compatibility** - no changes to existing constructors
+4. **Provides conditional modern features** - logging and telemetry work when available, fallback to Debug.WriteLine when not
+5. **Enables simple registration** via `builder.Services.AddLegacyLibrary()`
+6. **Allows gradual migration** of existing consumers
+
+### Key Architectural Principle
+
+**Augmentation over Reimplementation**: Instead of reimplementing the legacy logic, the wrapper:
+- Creates an instance of the original `LegacyDataProcessor`
+- Sets modern dependencies (ILogger, telemetry) as properties
+- Delegates all method calls to the original implementation
+- Adds distributed tracing around the legacy calls
+
+This ensures that all existing business logic, edge cases, and behaviors are preserved exactly as they were.
 
 ## Implementation Example
 
@@ -36,54 +48,105 @@ public interface ILegacyDataProcessor
     void ProcessBatch(IEnumerable<string> items);
 }
 
-// Legacy implementation (conceptual)
+// Legacy implementation with optional modern properties
 public class LegacyDataProcessor : ILegacyDataProcessor
 {
+    // Optional modern dependencies - can be set via properties
+    public ILogger<LegacyDataProcessor>? Logger { get; set; }
+    public Counter<long>? ProcessCounter { get; set; }
+    public Histogram<double>? ProcessingDuration { get; set; }
+    
     public ProcessResult ProcessData(string data)
     {
         // Legacy approach - direct instantiation
         var validator = new DataValidator();
         var transformer = new DataTransformer();
         
-        // Legacy logging
-        Debug.WriteLine($"Processing data: {data}");
+        // Set modern properties on legacy components if available
+        if (Logger != null)
+        {
+            validator.Logger = Logger;
+            transformer.Logger = Logger;
+        }
+        
+        // Modern logging with fallback to legacy
+        if (Logger != null)
+            Logger.LogInformation("Processing data with length: {DataLength}", data?.Length ?? 0);
+        else
+            Debug.WriteLine($"Processing data: {data}");
         
         var stopwatch = Stopwatch.StartNew();
         
         try
         {
-            // Processing logic
+            // Processing logic (unchanged)
             var validationResult = validator.Validate(data);
             if (!validationResult.IsValid)
             {
-                Debug.WriteLine($"Validation failed: {validationResult.Error}");
+                if (Logger != null)
+                    Logger.LogWarning("Validation failed: {Error}", validationResult.Error);
+                else
+                    Debug.WriteLine($"Validation failed: {validationResult.Error}");
+                    
+                ProcessCounter?.Add(1, new KeyValuePair<string, object?>("result", "validation_failed"));
                 return ProcessResult.Failed(validationResult.Error);
             }
             
             var result = transformer.Transform(data);
             
             stopwatch.Stop();
-            Debug.WriteLine($"Processing completed in {stopwatch.ElapsedMilliseconds}ms");
+            
+            // Modern telemetry with fallback to legacy logging
+            ProcessingDuration?.Record(stopwatch.Elapsed.TotalMilliseconds);
+            ProcessCounter?.Add(1, new KeyValuePair<string, object?>("result", "success"));
+            
+            if (Logger != null)
+                Logger.LogInformation("Processing completed successfully in {Duration}ms", stopwatch.ElapsedMilliseconds);
+            else
+                Debug.WriteLine($"Processing completed in {stopwatch.ElapsedMilliseconds}ms");
             
             return ProcessResult.Success(result);
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"Error processing data: {ex.Message}");
+            stopwatch.Stop();
+            ProcessCounter?.Add(1, new KeyValuePair<string, object?>("result", "error"));
+            
+            if (Logger != null)
+                Logger.LogError(ex, "Error processing data");
+            else
+                Debug.WriteLine($"Error processing data: {ex.Message}");
+                
             return ProcessResult.Failed(ex.Message);
         }
     }
     
     public void ProcessBatch(IEnumerable<string> items)
     {
-        Debug.WriteLine($"Starting batch processing of {items.Count()} items");
+        var itemsList = items.ToList();
         
-        foreach (var item in items)
+        if (Logger != null)
+            Logger.LogInformation("Starting batch processing of {ItemCount} items", itemsList.Count);
+        else
+            Debug.WriteLine($"Starting batch processing of {itemsList.Count} items");
+        
+        var successCount = 0;
+        var failureCount = 0;
+        
+        foreach (var item in itemsList)
         {
-            ProcessData(item);
+            var result = ProcessData(item);
+            if (result.IsSuccess)
+                successCount++;
+            else
+                failureCount++;
         }
         
-        Debug.WriteLine("Batch processing completed");
+        if (Logger != null)
+            Logger.LogInformation("Batch processing completed. Success: {SuccessCount}, Failures: {FailureCount}", 
+                successCount, failureCount);
+        else
+            Debug.WriteLine("Batch processing completed");
     }
 }
 
@@ -107,157 +170,116 @@ using Microsoft.Extensions.Logging;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 
-// Modern interfaces for internal dependencies
-public interface IDataValidator
+// Legacy internal classes with optional modern properties
+public class DataValidator
 {
-    ValidationResult Validate(string data);
-}
-
-public interface IDataTransformer
-{
-    string Transform(string data);
-}
-
-// Modern implementations with DI support
-public class DataValidator : IDataValidator
-{
-    private readonly ILogger<DataValidator> _logger;
-    
-    public DataValidator(ILogger<DataValidator> logger)
-    {
-        _logger = logger;
-    }
+    // Optional modern dependency - can be set via property
+    public ILogger? Logger { get; set; }
     
     public ValidationResult Validate(string data)
     {
-        _logger.LogDebug("Validating data: {Data}", data);
+        // Modern logging with fallback to legacy
+        if (Logger != null)
+            Logger.LogDebug("Validating data: {Data}", data);
+        else
+            Debug.WriteLine($"Validating data: {data}");
         
-        // Validation logic here
+        // Validation logic here (unchanged)
         if (string.IsNullOrWhiteSpace(data))
         {
-            _logger.LogWarning("Data validation failed: empty or null data");
+            if (Logger != null)
+                Logger.LogWarning("Data validation failed: empty or null data");
+            else
+                Debug.WriteLine("Data validation failed: empty or null data");
+                
             return ValidationResult.Invalid("Data cannot be empty");
         }
         
-        _logger.LogDebug("Data validation successful");
+        if (Logger != null)
+            Logger.LogDebug("Data validation successful");
+        else
+            Debug.WriteLine("Data validation successful");
+            
         return ValidationResult.Valid();
     }
 }
 
-public class DataTransformer : IDataTransformer
+public class DataTransformer
 {
-    private readonly ILogger<DataTransformer> _logger;
-    
-    public DataTransformer(ILogger<DataTransformer> logger)
-    {
-        _logger = logger;
-    }
+    // Optional modern dependency - can be set via property
+    public ILogger? Logger { get; set; }
     
     public string Transform(string data)
     {
-        _logger.LogDebug("Transforming data");
+        // Modern logging with fallback to legacy
+        if (Logger != null)
+            Logger.LogDebug("Transforming data");
+        else
+            Debug.WriteLine("Transforming data");
         
-        // Transformation logic here
+        // Transformation logic here (unchanged)
         var result = data.ToUpperInvariant();
         
-        _logger.LogDebug("Data transformation completed");
+        if (Logger != null)
+            Logger.LogDebug("Data transformation completed");
+        else
+            Debug.WriteLine("Data transformation completed");
+            
         return result;
     }
 }
 
-// Modern wrapper that implements the legacy interface
+// Modern wrapper that enhances the legacy implementation
 public class ModernDataProcessorWrapper : ILegacyDataProcessor
 {
-    private readonly IDataValidator _validator;
-    private readonly IDataTransformer _transformer;
-    private readonly ILogger<ModernDataProcessorWrapper> _logger;
+    private readonly LegacyDataProcessor _legacyProcessor;
+    private readonly ILogger<LegacyDataProcessor> _logger;
     private readonly Counter<long> _processCounter;
     private readonly Histogram<double> _processingDuration;
     
     public ModernDataProcessorWrapper(
-        IDataValidator validator,
-        IDataTransformer transformer,
-        ILogger<ModernDataProcessorWrapper> logger,
+        ILogger<LegacyDataProcessor> logger,
         IMeterFactory meterFactory)
     {
-        _validator = validator;
-        _transformer = transformer;
+        // Create the legacy processor and enhance it with modern dependencies
+        _legacyProcessor = new LegacyDataProcessor();
         _logger = logger;
         
         // Initialize telemetry
         var meter = meterFactory.Create("LegacyLibrary.DataProcessor");
         _processCounter = meter.CreateCounter<long>("data_processing_total", description: "Total number of data processing operations");
         _processingDuration = meter.CreateHistogram<double>("data_processing_duration", unit: "ms", description: "Duration of data processing operations");
+        
+        // Inject modern dependencies into the legacy processor
+        _legacyProcessor.Logger = _logger;
+        _legacyProcessor.ProcessCounter = _processCounter;
+        _legacyProcessor.ProcessingDuration = _processingDuration;
     }
     
     public ProcessResult ProcessData(string data)
     {
+        // Add distributed tracing around the legacy implementation
         using var activity = Activity.Current?.Source.StartActivity("ProcessData");
         activity?.SetTag("data.length", data?.Length ?? 0);
         
-        _logger.LogInformation("Processing data with length: {DataLength}", data?.Length ?? 0);
+        // Delegate to the actual legacy implementation
+        var result = _legacyProcessor.ProcessData(data);
         
-        var stopwatch = Stopwatch.StartNew();
+        // Add additional telemetry tags based on result
+        activity?.SetTag("result", result.IsSuccess ? "success" : "failed");
         
-        try
-        {
-            // Use injected dependencies instead of creating new instances
-            var validationResult = _validator.Validate(data);
-            if (!validationResult.IsValid)
-            {
-                _logger.LogWarning("Data validation failed: {Error}", validationResult.Error);
-                activity?.SetTag("result", "validation_failed");
-                _processCounter.Add(1, new KeyValuePair<string, object?>("result", "validation_failed"));
-                return ProcessResult.Failed(validationResult.Error);
-            }
-            
-            var result = _transformer.Transform(data);
-            
-            stopwatch.Stop();
-            _processingDuration.Record(stopwatch.Elapsed.TotalMilliseconds);
-            _processCounter.Add(1, new KeyValuePair<string, object?>("result", "success"));
-            
-            _logger.LogInformation("Data processing completed successfully in {Duration}ms", stopwatch.ElapsedMilliseconds);
-            activity?.SetTag("result", "success");
-            
-            return ProcessResult.Success(result);
-        }
-        catch (Exception ex)
-        {
-            stopwatch.Stop();
-            _logger.LogError(ex, "Error processing data");
-            activity?.SetTag("result", "error");
-            _processCounter.Add(1, new KeyValuePair<string, object?>("result", "error"));
-            
-            return ProcessResult.Failed(ex.Message);
-        }
+        return result;
     }
     
     public void ProcessBatch(IEnumerable<string> items)
     {
+        // Add distributed tracing around the legacy implementation
         using var activity = Activity.Current?.Source.StartActivity("ProcessBatch");
         var itemsList = items.ToList();
         activity?.SetTag("batch.size", itemsList.Count);
         
-        _logger.LogInformation("Starting batch processing of {ItemCount} items", itemsList.Count);
-        
-        var successCount = 0;
-        var failureCount = 0;
-        
-        foreach (var item in itemsList)
-        {
-            var result = ProcessData(item);
-            if (result.IsSuccess)
-                successCount++;
-            else
-                failureCount++;
-        }
-        
-        _logger.LogInformation("Batch processing completed. Success: {SuccessCount}, Failures: {FailureCount}", 
-            successCount, failureCount);
-        
-        activity?.SetTag("batch.success_count", successCount);
-        activity?.SetTag("batch.failure_count", failureCount);
+        // Delegate to the actual legacy implementation
+        _legacyProcessor.ProcessBatch(itemsList);
     }
 }
 
@@ -297,16 +319,8 @@ public static class LegacyLibraryServiceCollectionExtensions
             services.Configure(configureOptions);
         }
         
-        // Register internal dependencies
-        services.TryAddScoped<IDataValidator, DataValidator>();
-        services.TryAddScoped<IDataTransformer, DataTransformer>();
-        
-        // Register the modern wrapper as the legacy interface
+        // Register the modern wrapper that uses the legacy implementation internally
         services.TryAddScoped<ILegacyDataProcessor, ModernDataProcessorWrapper>();
-        
-        // For backward compatibility, also register the legacy implementation
-        // This allows consumers to choose which implementation to use
-        services.TryAddScoped<LegacyDataProcessor>();
         
         return services;
     }
@@ -501,32 +515,48 @@ public class HybridService
 
 ## Benefits of This Approach
 
-### 1. **Backward Compatibility**
+### 1. **True Legacy Code Reuse**
+- The wrapper actually uses the original legacy implementation, not a reimplementation
+- All existing logic, business rules, and edge cases are preserved
+- No risk of introducing bugs through code reimplementation
+- Legacy code remains the single source of truth
+
+### 2. **Property-Based Enhancement**
+- Modern dependencies are added through properties, not constructor changes
+- Legacy classes can work with or without modern dependencies
+- No breaking changes to existing constructors or method signatures
+- Gradual modernization without touching core legacy logic
+
+### 3. **Backward Compatibility**
 - Existing consumers continue to work without any changes
 - Original interface remains intact
 - Legacy implementation is still available if needed
+- Zero migration required for existing code
 
-### 2. **Modern Patterns**
+### 4. **Modern Patterns Through Augmentation**
 - Dependency injection enables better testability and loose coupling
-- Structured logging provides better observability
-- Telemetry and metrics enable performance monitoring
+- Structured logging replaces Debug.WriteLine when logger is available
+- Telemetry and metrics are added without changing core logic
 - Activity tracing supports distributed tracing scenarios
 
-### 3. **Gradual Migration**
+### 5. **Gradual Migration**
 - Consumers can migrate at their own pace
 - Hybrid approaches allow selective modernization
 - Risk is minimized through incremental adoption
+- Legacy and modern approaches can coexist
 
-### 4. **Enhanced Observability**
-- Replace `Debug.WriteLine` with structured logging
+### 6. **Enhanced Observability**
+- Conditionally replace `Debug.WriteLine` with structured logging
 - Add performance metrics and counters
 - Enable distributed tracing
 - Support for modern APM tools
+- Fallback to original behavior when modern dependencies are not available
 
-### 5. **Improved Testing**
-- Dependencies can be mocked and tested independently
-- Better unit test coverage
-- Integration testing with test containers and mocks
+### 7. **Minimal Code Changes**
+- Legacy classes only gain new optional properties
+- Core business logic remains untouched
+- Wrapper provides thin layer for modern integrations
+- Original Debug.WriteLine calls are preserved as fallback
 
 ## Configuration and Customization
 
@@ -563,29 +593,53 @@ public class ModernDataProcessorWrapperTests
     public void ProcessData_ValidInput_ReturnsSuccess()
     {
         // Arrange
-        var mockValidator = new Mock<IDataValidator>();
-        var mockTransformer = new Mock<IDataTransformer>();
-        var mockLogger = new Mock<ILogger<ModernDataProcessorWrapper>>();
+        var mockLogger = new Mock<ILogger<LegacyDataProcessor>>();
         var mockMeterFactory = new Mock<IMeterFactory>();
+        var mockMeter = new Mock<Meter>("test");
+        var mockCounter = new Mock<Counter<long>>();
+        var mockHistogram = new Mock<Histogram<double>>();
         
-        mockValidator.Setup(v => v.Validate("test")).Returns(ValidationResult.Valid());
-        mockTransformer.Setup(t => t.Transform("test")).Returns("TEST");
+        mockMeterFactory.Setup(f => f.Create("LegacyLibrary.DataProcessor")).Returns(mockMeter.Object);
+        mockMeter.Setup(m => m.CreateCounter<long>(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()))
+               .Returns(mockCounter.Object);
+        mockMeter.Setup(m => m.CreateHistogram<double>(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()))
+               .Returns(mockHistogram.Object);
         
-        var processor = new ModernDataProcessorWrapper(
-            mockValidator.Object, 
-            mockTransformer.Object, 
-            mockLogger.Object,
-            mockMeterFactory.Object);
+        var wrapper = new ModernDataProcessorWrapper(mockLogger.Object, mockMeterFactory.Object);
         
         // Act
-        var result = processor.ProcessData("test");
+        var result = wrapper.ProcessData("test");
         
         // Assert
         Assert.That(result.IsSuccess, Is.True);
         Assert.That(result.Data, Is.EqualTo("TEST"));
         
-        mockValidator.Verify(v => v.Validate("test"), Times.Once);
-        mockTransformer.Verify(t => t.Transform("test"), Times.Once);
+        // Verify that the wrapper actually uses the legacy implementation
+        // The legacy processor should have logged the processing
+        mockLogger.Verify(
+            x => x.Log(
+                LogLevel.Information,
+                It.IsAny<EventId>(),
+                It.Is<It.IsAnyType>((o, t) => o.ToString().Contains("Processing data")),
+                It.IsAny<Exception>(),
+                It.IsAny<Func<It.IsAnyType, Exception, string>>()),
+            Times.AtLeastOnce);
+    }
+    
+    [Test]
+    public void LegacyProcessor_WithoutModernDependencies_StillWorks()
+    {
+        // Arrange - use legacy processor directly without any modern features
+        var legacyProcessor = new LegacyDataProcessor();
+        
+        // Act
+        var result = legacyProcessor.ProcessData("test");
+        
+        // Assert - should work exactly as before
+        Assert.That(result.IsSuccess, Is.True);
+        Assert.That(result.Data, Is.EqualTo("TEST"));
+        
+        // No exceptions should be thrown, and Debug.WriteLine should have been used
     }
 }
 ```
@@ -594,10 +648,12 @@ public class ModernDataProcessorWrapperTests
 
 This concept demonstrates how to integrate a legacy .NET library into a modern .NET Core application while:
 
+- **Actually using the original legacy code** instead of reimplementing it
+- **Enhancing through properties** rather than breaking constructor signatures
 - Maintaining complete backward compatibility
 - Implementing modern patterns (DI, structured logging, telemetry)
 - Providing simple integration via `builder.Services.AddLegacyLibrary()`
 - Enabling gradual migration for existing consumers
 - Improving testability and observability
 
-The wrapper pattern allows the legacy library to benefit from modern .NET Core features without requiring changes to the original codebase, making it a practical solution for enterprise environments where legacy systems need to coexist with modern applications.
+The key architectural principle is **augmentation over reimplementation**: the wrapper pattern allows the legacy library to benefit from modern .NET Core features by setting optional properties on the original classes, while preserving all existing business logic, edge cases, and behaviors. This makes it a practical solution for enterprise environments where legacy systems need to coexist with modern applications without the risk of introducing bugs through code duplication.
