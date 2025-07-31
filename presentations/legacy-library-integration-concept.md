@@ -57,6 +57,14 @@ public class LegacyDataProcessor : ILegacyDataProcessor
     public Counter<long>? ProcessCounter { get; set; }
     public Histogram<double>? ProcessingDuration { get; set; }
     
+    // Default constructor can optionally initialize with debug logger factory
+    public LegacyDataProcessor()
+    {
+        // Uncomment to enable structured logging by default in legacy scenarios
+        // LoggerFactory = new DebugLoggerFactory();
+        // Logger = LoggerFactory.CreateLogger<LegacyDataProcessor>();
+    }
+    
     public ProcessResult ProcessData(string data)
     {
         // Legacy approach - direct instantiation
@@ -183,6 +191,12 @@ public class DataValidator
     // Optional modern dependency - can be set via property
     public ILogger? Logger { get; set; }
     
+    public DataValidator()
+    {
+        // Uncomment to enable structured logging by default in legacy scenarios
+        // Logger = new DebugLoggerFactory().CreateLogger<DataValidator>();
+    }
+    
     public ValidationResult Validate(string data)
     {
         // Modern logging with fallback to legacy
@@ -215,6 +229,12 @@ public class DataTransformer
 {
     // Optional modern dependency - can be set via property
     public ILogger? Logger { get; set; }
+    
+    public DataTransformer()
+    {
+        // Uncomment to enable structured logging by default in legacy scenarios
+        // Logger = new DebugLoggerFactory().CreateLogger<DataTransformer>();
+    }
     
     public string Transform(string data)
     {
@@ -301,7 +321,135 @@ public class ValidationResult
 }
 ```
 
-### 3. Service Registration Extension
+### 3. Debug LoggerFactory for Legacy Scenarios
+
+For scenarios where no DI container is available but you still want to use structured logging instead of `Debug.WriteLine`, you can use this custom `LoggerFactory`:
+
+```csharp
+using Microsoft.Extensions.Logging;
+using System.Diagnostics;
+
+/// <summary>
+/// A LoggerFactory that creates loggers which output to System.Diagnostics.Debug.WriteLine
+/// with proper log level formatting and exception handling.
+/// Useful for legacy scenarios where no DI container is available.
+/// </summary>
+public class DebugLoggerFactory : ILoggerFactory
+{
+    private readonly LogLevel _minimumLevel;
+    
+    public DebugLoggerFactory(LogLevel minimumLevel = LogLevel.Debug)
+    {
+        _minimumLevel = minimumLevel;
+    }
+    
+    public ILogger CreateLogger(string categoryName)
+    {
+        return new DebugLogger(categoryName, _minimumLevel);
+    }
+    
+    public void AddProvider(ILoggerProvider provider)
+    {
+        // Not supported in this simple implementation
+    }
+    
+    public void Dispose()
+    {
+        // Nothing to dispose
+    }
+}
+
+/// <summary>
+/// A logger implementation that outputs to System.Diagnostics.Debug.WriteLine
+/// with formatted log levels and proper exception handling.
+/// </summary>
+public class DebugLogger : ILogger
+{
+    private readonly string _categoryName;
+    private readonly LogLevel _minimumLevel;
+    
+    public DebugLogger(string categoryName, LogLevel minimumLevel)
+    {
+        _categoryName = categoryName;
+        _minimumLevel = minimumLevel;
+    }
+    
+    public IDisposable BeginScope<TState>(TState state) => new NoOpDisposable();
+    
+    public bool IsEnabled(LogLevel logLevel) => logLevel >= _minimumLevel;
+    
+    public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter)
+    {
+        if (!IsEnabled(logLevel))
+            return;
+            
+        var levelLabel = GetLogLevelLabel(logLevel);
+        var message = formatter(state, exception);
+        var timestamp = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.fff");
+        
+        var formattedMessage = $"{timestamp} [{levelLabel}] {_categoryName}: {message}";
+        
+        // Include exception details if present
+        if (exception != null)
+        {
+            formattedMessage += Environment.NewLine + 
+                               $"Exception: {exception.GetType().Name}: {exception.Message}" +
+                               Environment.NewLine + 
+                               $"StackTrace: {exception.StackTrace}";
+        }
+        
+        Debug.WriteLine(formattedMessage);
+    }
+    
+    private static string GetLogLevelLabel(LogLevel logLevel)
+    {
+        return logLevel switch
+        {
+            LogLevel.Trace => "TRACE",
+            LogLevel.Debug => "DEBUG", 
+            LogLevel.Information => "INFO",
+            LogLevel.Warning => "WARN",
+            LogLevel.Error => "ERROR",
+            LogLevel.Critical => "CRIT",
+            _ => "NONE"
+        };
+    }
+    
+    private class NoOpDisposable : IDisposable
+    {
+        public void Dispose() { }
+    }
+}
+
+/// <summary>
+/// Usage example for legacy scenarios without DI container
+/// </summary>
+public static class LegacyUsageExample
+{
+    public static void DemonstrateUsage()
+    {
+        // Create a debug logger factory for legacy scenarios
+        var loggerFactory = new DebugLoggerFactory(LogLevel.Debug);
+        
+        // Create and configure a legacy processor with the debug logger factory
+        var processor = new LegacyDataProcessor();
+        processor.LoggerFactory = loggerFactory;
+        
+        // Now all logging will go through structured logging to Debug.WriteLine
+        // with proper formatting: "[INFO] LegacyDataProcessor: Processing data with length: 5"
+        var result = processor.ProcessData("test");
+        
+        // The logger factory can also be used for individual components
+        var validator = new DataValidator();
+        validator.Logger = loggerFactory.CreateLogger<DataValidator>();
+        
+        var transformer = new DataTransformer(); 
+        transformer.Logger = loggerFactory.CreateLogger<DataTransformer>();
+    }
+}
+```
+
+### 4. Service Registration Extension
 
 Create an extension method for easy service registration:
 
@@ -519,6 +667,115 @@ public class HybridService
         var result = _legacyProcessor.ProcessData(data);
     }
 }
+```
+
+### 6. Using DebugLoggerFactory for Enhanced Legacy Scenarios
+
+To replace all `Debug.WriteLine` calls with structured logging even in pure legacy scenarios, you can enable the `DebugLoggerFactory` by default:
+
+```csharp
+// Option 1: Enable in constructors (uncomment the lines in legacy classes)
+public class LegacyDataProcessor : ILegacyDataProcessor
+{
+    public ILogger? Logger { get; set; }
+    public ILoggerFactory? LoggerFactory { get; set; }
+    
+    public LegacyDataProcessor()
+    {
+        // Enable structured logging by default in legacy scenarios
+        LoggerFactory = new DebugLoggerFactory();
+        Logger = LoggerFactory.CreateLogger<LegacyDataProcessor>();
+    }
+    // ... rest of implementation
+}
+
+// Option 2: Factory method for creating enhanced legacy instances
+public static class LegacyDataProcessorFactory
+{
+    public static LegacyDataProcessor CreateWithStructuredLogging()
+    {
+        var processor = new LegacyDataProcessor();
+        var loggerFactory = new DebugLoggerFactory();
+        processor.LoggerFactory = loggerFactory;
+        processor.Logger = loggerFactory.CreateLogger<LegacyDataProcessor>();
+        return processor;
+    }
+    
+    public static LegacyDataProcessor CreateClassic()
+    {
+        return new LegacyDataProcessor(); // No structured logging
+    }
+}
+
+// Option 3: Global configuration for legacy usage
+public static class LegacyLibraryGlobalConfig
+{
+    public static bool EnableStructuredLoggingByDefault { get; set; } = false;
+    
+    public static ILoggerFactory? DefaultLoggerFactory { get; set; }
+    
+    public static void EnableDebugLogging(LogLevel minimumLevel = LogLevel.Debug)
+    {
+        DefaultLoggerFactory = new DebugLoggerFactory(minimumLevel);
+        EnableStructuredLoggingByDefault = true;
+    }
+}
+
+// Usage examples
+public class LegacyUsageExamples
+{
+    public void ExampleWithFactoryMethod()
+    {
+        // Creates a processor with structured logging enabled
+        var processor = LegacyDataProcessorFactory.CreateWithStructuredLogging();
+        
+        // All logging will now output to Debug.WriteLine with format:
+        // "2023-12-07 10:30:45.123 [INFO] LegacyDataProcessor: Processing data with length: 5"
+        var result = processor.ProcessData("hello");
+    }
+    
+    public void ExampleWithGlobalConfig()
+    {
+        // Enable structured logging globally for all legacy instances
+        LegacyLibraryGlobalConfig.EnableDebugLogging(LogLevel.Information);
+        
+        // Now all new instances will use structured logging by default
+        var processor = new LegacyDataProcessor();
+        var validator = new DataValidator();
+        var transformer = new DataTransformer();
+        
+        // All will log to Debug.WriteLine with proper formatting
+    }
+    
+    public void ExampleManualSetup()
+    {
+        var loggerFactory = new DebugLoggerFactory();
+        
+        var processor = new LegacyDataProcessor();
+        processor.LoggerFactory = loggerFactory;
+        processor.Logger = loggerFactory.CreateLogger<LegacyDataProcessor>();
+        
+        // Individual components will get their own logger categories
+        var result = processor.ProcessData("test"); // Uses component-specific loggers internally
+    }
+}
+```
+
+This approach provides several benefits:
+
+1. **Gradual Migration**: Legacy code can be enhanced with structured logging without requiring DI
+2. **Better Debugging**: Log output includes timestamps, log levels, and proper exception formatting
+3. **Component Categorization**: Different components get their own logger categories for better filtering
+4. **Exception Handling**: Full exception details including stack traces are automatically included
+5. **Backward Compatibility**: Can be enabled/disabled without breaking existing code
+
+Sample output from `DebugLoggerFactory`:
+```
+2023-12-07 10:30:45.123 [INFO] LegacyDataProcessor: Processing data with length: 5
+2023-12-07 10:30:45.124 [DEBUG] DataValidator: Validating data: hello
+2023-12-07 10:30:45.125 [DEBUG] DataValidator: Data validation successful
+2023-12-07 10:30:45.126 [DEBUG] DataTransformer: Transforming data
+2023-12-07 10:30:45.127 [INFO] LegacyDataProcessor: Processing completed successfully in 4ms
 ```
 
 ## Benefits of This Approach
